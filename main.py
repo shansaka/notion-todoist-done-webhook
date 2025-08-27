@@ -1,8 +1,9 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 import requests
 from datetime import datetime, timezone
 import os
 import traceback
+import uuid
 
 app = FastAPI()
 
@@ -21,28 +22,28 @@ NOTION_HEADERS = {
 # -----------------------------
 # Helper Functions
 # -----------------------------
-def find_notion_page_by_todoist_id(todoist_id):
-    print(f"[INFO] Searching Notion for Todoist ID: {todoist_id}", flush=True)
+def find_notion_page_by_todoist_id(todoist_id, req_id):
+    print(f"[{req_id}] [INFO] Searching Notion for Todoist ID: {todoist_id}", flush=True)
     query_url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     response = requests.post(query_url, headers=NOTION_HEADERS, json={
         "filter": {"property": "Todoist ID", "rich_text": {"equals": str(todoist_id)}}
     })
 
     if response.status_code != 200:
-        print(f"[ERROR] Failed to query Notion: {response.text}", flush=True)
+        print(f"[{req_id}] [ERROR] Failed to query Notion: {response.text}", flush=True)
     response.raise_for_status()
 
     results = response.json().get("results", [])
     if not results:
-        print(f"[WARN] No matching Notion page for Todoist ID: {todoist_id}", flush=True)
+        print(f"[{req_id}] [WARN] No matching Notion page for Todoist ID: {todoist_id}", flush=True)
         return None
 
-    print(f"[INFO] Found Notion page for Todoist ID: {todoist_id}", flush=True)
+    print(f"[{req_id}] [INFO] Found Notion page for Todoist ID: {todoist_id}", flush=True)
     return results[0]
 
 
-def mark_notion_task_done(page_id):
-    print(f"[INFO] Marking Notion task {page_id} as Done", flush=True)
+def mark_notion_task_done(page_id, req_id):
+    print(f"[{req_id}] [INFO] Marking Notion task {page_id} as Done", flush=True)
     data = {
         "properties": {
             "Done": {"checkbox": True},
@@ -52,44 +53,61 @@ def mark_notion_task_done(page_id):
     response = requests.patch(f"https://api.notion.com/v1/pages/{page_id}", headers=NOTION_HEADERS, json=data)
 
     if response.status_code != 200:
-        print(f"[ERROR] Failed to update Notion task {page_id}: {response.text}", flush=True)
+        print(f"[{req_id}] [ERROR] Failed to update Notion task {page_id}: {response.text}", flush=True)
     response.raise_for_status()
 
-    print(f"[INFO] Task {page_id} successfully updated in Notion", flush=True)
+    print(f"[{req_id}] [INFO] Task {page_id} successfully updated in Notion", flush=True)
     return response.json()
+
+
+def process_webhook(payload, req_id):
+    """Process Todoist webhook in background."""
+    try:
+        task_id = payload.get("task_id")
+        event_type = payload.get("event_name", "unknown")
+        print(f"[{req_id}] [DEBUG] Processing task_id={task_id}, event={event_type}", flush=True)
+
+        if not task_id:
+            print(f"[{req_id}] [ERROR] task_id missing from payload", flush=True)
+            return
+
+        page = find_notion_page_by_todoist_id(task_id, req_id)
+        if not page:
+            print(f"[{req_id}] [WARN] No Notion task found for Todoist ID {task_id}", flush=True)
+            return
+
+        page_id = page["id"]
+        mark_notion_task_done(page_id, req_id)
+
+    except Exception as e:
+        print(f"[{req_id}] [ERROR] Exception occurred: {str(e)}", flush=True)
+        traceback.print_exc()
+
 
 # -----------------------------
 # Webhook Endpoint
 # -----------------------------
 @app.post("/todoist-webhook")
-async def todoist_webhook(request: Request):
-    print("[INFO] Received webhook from Todoist", flush=True)
+async def todoist_webhook(request: Request, background_tasks: BackgroundTasks):
+    req_id = uuid.uuid4().hex[:6]  # unique request ID for logs
+    print(f"[{req_id}] [INFO] Received webhook from Todoist", flush=True)
+
     try:
         payload = await request.json()
-        print(f"[DEBUG] Webhook payload: {payload}", flush=True)
+        print(f"[{req_id}] [DEBUG] Webhook payload: {payload}", flush=True)
 
-        task_id = payload.get("task_id")
-        if not task_id:
-            print("[ERROR] task_id missing from webhook payload", flush=True)
-            return {"status": "error", "message": "task_id missing"}
+        # process in background (avoid Todoist retries)
+        background_tasks.add_task(process_webhook, payload, req_id)
 
-        page = find_notion_page_by_todoist_id(task_id)
-        if not page:
-            msg = f"No Notion task found for Todoist ID {task_id}"
-            print(f"[WARN] {msg}", flush=True)
-            return {"status": "error", "message": msg}
-
-        page_id = page["id"]
-        mark_notion_task_done(page_id)
-        success_msg = f"Task {task_id} marked done in Notion"
-        print(f"[INFO] {success_msg}", flush=True)
-        return {"status": "success", "message": success_msg}
+        # immediately respond so Todoist doesn't retry
+        return {"status": "ok", "req_id": req_id}
 
     except Exception as e:
         error_msg = f"Exception occurred: {str(e)}"
-        print(f"[ERROR] {error_msg}", flush=True)
+        print(f"[{req_id}] [ERROR] {error_msg}", flush=True)
         traceback.print_exc()
-        return {"status": "error", "message": error_msg}
+        return {"status": "error", "message": error_msg, "req_id": req_id}
+
 
 # -----------------------------
 # Run locally (optional)
@@ -97,4 +115,4 @@ async def todoist_webhook(request: Request):
 if __name__ == "__main__":
     import uvicorn
     print("[INFO] Starting FastAPI app...", flush=True)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, workers=1)
