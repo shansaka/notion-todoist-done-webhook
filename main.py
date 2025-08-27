@@ -63,12 +63,14 @@ def mark_notion_task_done(page_id, req_id):
 def process_webhook(payload, req_id):
     """Process Todoist webhook in background."""
     try:
-        task_id = payload.get("task_id")
-        event_type = payload.get("event_name", "unknown")
-        print(f"[{req_id}] [DEBUG] Processing task_id={task_id}, event={event_type}", flush=True)
+        event_data = payload.get("event_data", {})
+        task_id = event_data.get("id")
+        event_name = payload.get("event_name", "unknown")
+        task_url = event_data.get("url")
+        print(f"[{req_id}] [DEBUG] Processing task_id={task_id}, event={event_name}, URL={task_url}", flush=True)
 
         if not task_id:
-            print(f"[{req_id}] [ERROR] task_id missing from payload", flush=True)
+            print(f"[{req_id}] [ERROR] task_id missing in event_data", flush=True)
             return
 
         page = find_notion_page_by_todoist_id(task_id, req_id)
