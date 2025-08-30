@@ -54,12 +54,25 @@ docker run -p 8000:8000 notion-todoist-done-webhook
 
 ## Configuration
 
-- Set any required environment variables (e.g., Todoist API key, Notion integration token) as needed for your deployment.
+## Environment Variables
+
+The following environment variables are required for the webhook to function:
+
+- `NOTION_TOKEN`: Your Notion integration token. This is used to authenticate API requests to Notion.
+- `NOTION_DATABASE_ID`: The ID of the Notion database containing your tasks. The webhook will query and update this database.
+
+Set these variables in your environment or pass them to Docker using the `-e` flag:
+
+````powershell
 
 ## License
 
 MIT
 
+
+Or with Docker:
+```powershell
 ## Author
 
 shansaka
+````
